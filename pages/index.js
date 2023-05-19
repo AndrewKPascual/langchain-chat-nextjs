@@ -1,99 +1,109 @@
-import { useState, useRef, useEffect } from 'react'
-import Head from 'next/head'
-import styles from '../styles/Home.module.css'
-import Image from 'next/image'
-import ReactMarkdown from 'react-markdown'
+import { useState, useRef, useEffect } from 'react';
+import Head from 'next/head';
+import styles from '../styles/Home.module.css';
+import Image from 'next/image';
+import ReactMarkdown from 'react-markdown';
 import CircularProgress from '@mui/material/CircularProgress';
 
 export default function Home() {
-
+  const [audioUrl, setAudioUrl] = useState(null);
   const [userInput, setUserInput] = useState("");
-  const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [messages, setMessages] = useState([
-    {
-      "message": "Hi there! How can I help?",
-      "type": "apiMessage"
-    }
+    { "message": "Hi there! How can I help?", "type": "apiMessage" }
   ]);
-
+  const [mediaRecorder, setMediaRecorder] = useState(null);
+  const [audioData, setAudioData] = useState([]);
+  
   const messageListRef = useRef(null);
   const textAreaRef = useRef(null);
 
   // Auto scroll chat to bottom
   useEffect(() => {
-    const messageList = messageListRef.current;
-    messageList.scrollTop = messageList.scrollHeight;
-  }, [messages]);
+    // This will run only on the client side
+    if (audioData.length > 0) {
+      const url = URL.createObjectURL(new Blob(audioData));
+      setAudioUrl(url);
+    } else {
+      setAudioUrl(null);
+    }
+  }, [audioData]);
 
-  // Focus on text field on load
-  useEffect(() => {
-    textAreaRef.current.focus();
-  }, []);
-
-  // Handle errors
   const handleError = () => {
     setMessages((prevMessages) => [...prevMessages, { "message": "Oops! There seems to be an error. Please try again.", "type": "apiMessage" }]);
     setLoading(false);
     setUserInput("");
   }
 
-  // Handle form submission
-  const handleSubmit = async(e) => {
-    e.preventDefault();
-
-    if (userInput.trim() === "") {
-      return;
-    }
-
+  const handleSubmit = async () => {
     setLoading(true);
-    setMessages((prevMessages) => [...prevMessages, { "message": userInput, "type": "userMessage" }]);
-
-    // Send user question and history to API
-    const response = await fetch("/api/chat", {
+  
+    const audioBlob = new Blob(audioData, { type: 'audio/webm' });
+    const formData = new FormData();
+    formData.append('audio', audioBlob);
+  
+    const response = await fetch("/api/transcribe", {
       method: "POST",
-      headers: {
-          "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ question: userInput, history: history }),
-    });
+      body: formData,
+  });
 
     if (!response.ok) {
       handleError();
       return;
-  }
+    }
 
-    // Reset user input
-    setUserInput("");
     const data = await response.json();
+    setMessages((prevMessages) => [...prevMessages, { "message": data.transcript, "type": "userMessage" }]);
+    setUserInput(data.transcript);
 
-    if (data.result.error === "Unauthorized") {
+    const context = [...messages, { "message": userInput, "type": "userMessage" }];
+
+    const chatResponse = await fetch("/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ messages: context }),
+    });
+
+    if (!chatResponse.ok) {
       handleError();
       return;
     }
 
-    setMessages((prevMessages) => [...prevMessages, { "message": data.result.success, "type": "apiMessage" }]);
+    const chatData = await chatResponse.json();
+    setMessages((prevMessages) => [...prevMessages, { "message": chatData.result.success, "type": "apiMessage" }]);
     setLoading(false);
-    
+    setAudioData([]);
   };
 
-  // Prevent blank submissions and allow for multiline input
-  const handleEnter = (e) => {
-    if (e.key === "Enter" && userInput) {
-      if(!e.shiftKey && userInput) {
-        handleSubmit(e);
-      }
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-    }
-  };
+  const startRecording = () => {
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    const mediaRecorder = new MediaRecorder(stream);
+    setMediaRecorder(mediaRecorder);
+    mediaRecorder.start();
+    // Clear previous audio data when starting a new recording
+    setAudioData([]);
+    mediaRecorder.ondataavailable = (e) => {
+      setAudioData(prevAudioData => [...prevAudioData, e.data]);
+    };
+  });
+}
 
-  // Keep history in sync with messages
-  useEffect(() => {
-    if (messages.length >= 3) {
-      setHistory([[messages[messages.length - 2].message, messages[messages.length - 1].message]]);
-    }
-    }, [messages])
+const stopRecording = () => {
+  if (mediaRecorder) {
+    mediaRecorder.stop();
+    // After stopping the recording, you can immediately send it to the server
+    handleSubmit();
+  }
+}
+
+const handleFormSubmit = (e) => {
+  e.preventDefault();
+  handleSubmit();
+};
+
+
 
   return (
     <>
@@ -116,27 +126,24 @@ export default function Home() {
       <div className = {styles.cloud}>
         <div ref={messageListRef} className = {styles.messagelist}>
         {messages.map((message, index) => {
-          return (
-            // The latest message sent by the user will be animated while waiting for a response
-              <div key = {index} className = {message.type === "userMessage" && loading && index === messages.length - 1  ? styles.usermessagewaiting : message.type === "apiMessage" ? styles.apimessage : styles.usermessage}>
-                {/* Display the correct icon depending on the message type */}
-                {message.type === "apiMessage" ? <Image src = "/parroticon.png" alt = "AI" width = "30" height = "30" className = {styles.boticon} priority = {true} /> : <Image src = "/usericon.png" alt = "Me" width = "30" height = "30" className = {styles.usericon} priority = {true} />}
-              <div className = {styles.markdownanswer}>
-                {/* Messages are being rendered in Markdown format */}
-                <ReactMarkdown linkTarget = {"_blank"}>{message.message}</ReactMarkdown>
-                </div>
-              </div>
-          )
-        })}
+  return (
+    <div key = {index} className = {message.type === "userMessage" && loading && index === messages.length - 1  ? styles.usermessagewaiting : message.type === "apiMessage" ? styles.apimessage : styles.usermessage}>
+      {message.type === "apiMessage" ? <Image src = "/parroticon.png" alt = "AI" width = "30" height = "30" className = {styles.boticon} priority = {true} /> : <Image src = "/usericon.png" alt = "Me" width = "30" height = "30" className = {styles.usericon} priority = {true} />}
+      <div className = {styles.markdownanswer}>
+        <ReactMarkdown linkTarget = {"_blank"}>{message.message}</ReactMarkdown>
+      </div>
+    </div>
+  )
+})}
+
         </div>
             </div>
            <div className={styles.center}>
             
             <div className = {styles.cloudform}>
-           <form onSubmit = {handleSubmit}>
+           <form onSubmit = {handleFormSubmit}>
           <textarea 
           disabled = {loading}
-          onKeyDown={handleEnter}
           ref = {textAreaRef}
           autoFocus = {false}
           rows = {1}
@@ -159,14 +166,17 @@ export default function Home() {
             <svg viewBox='0 0 20 20' className={styles.svgicon} xmlns='http://www.w3.org/2000/svg'>
             <path d='M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z'></path>
           </svg>}
-            </button>
+            </button> 
             </form>
             </div>
+            <button onClick={startRecording}>Start Recording</button>
+            <button onClick={stopRecording}>Stop Recording</button>
+            <audio src={audioUrl} controls />
             <div className = {styles.footer}>
             <p>Powered by <a href = "https://github.com/hwchase17/langchain" target="_blank">LangChain</a>. Built by <a href="https://twitter.com/chillzaza_" target="_blank">Zahid</a>.</p>
             </div>
         </div>
       </main>
     </>
-  )
+  );
 }
